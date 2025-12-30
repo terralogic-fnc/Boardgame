@@ -6,7 +6,8 @@ COPY . .
 # DEBUG (keep once, remove later) 
 RUN find . -name pom.xml
 # Build using shell so glob EXPANDS correctly
-RUN cd workspace/* && \ ls -l && \ mvn clean install -DskipTests
+RUN cd workspace/* && \ ls -l &&
+\ mvn clean install -DskipTests
 # ========================= # Stage 2: Runtime # ========================= 
 FROM eclipse-temurin:11-jre WORKDIR /usr/src/app 
 # Copy jar from real project directory 
