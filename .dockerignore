@@ -1,0 +1,9 @@
+.git
+.gitignore
+target
+node_modules
+.m2
+.trivy
+.trivyignore
+*.log
+*.tar
