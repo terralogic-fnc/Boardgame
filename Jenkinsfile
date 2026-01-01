@@ -22,10 +22,13 @@ pipeline {
     TRIVY_CACHE_DIR = "/cache/trivy"
   }
 
+  /*
+   * IMPORTANT:
+   * - Concurrency is ENABLED by default
+   * - DO NOT add disableConcurrentBuilds()
+   */
   options {
     timestamps()
-    // ✅ ALLOW concurrent builds (important)
-    disableConcurrentBuilds(false)
   }
 
   stages {
@@ -39,7 +42,7 @@ pipeline {
           echo "User:"
           whoami
 
-          echo "Java / Maven:"
+          echo "Java & Maven:"
           mvn -v
 
           echo "Trivy:"
@@ -64,7 +67,7 @@ pipeline {
     }
 
     /* =========================
-       SonarQube Scan (NO REBUILD)
+       SonarQube Scan
        ========================= */
     stage('SonarQube Scan') {
       steps {
@@ -73,10 +76,10 @@ pipeline {
             echo "=== SONAR ANALYSIS ==="
 
             mvn -DskipTests \
-                -Dsonar.projectKey=board-game \
-                -Dsonar.projectName=board-game \
-                -Dsonar.java.binaries=target/classes \
-                org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar
+              -Dsonar.projectKey=board-game \
+              -Dsonar.projectName=board-game \
+              -Dsonar.java.binaries=target/classes \
+              org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar
           '''
         }
       }
@@ -130,9 +133,13 @@ pipeline {
     }
 
     /* =========================
-       Update Argo Rollout (Canary 30%)
+       Update Argo Rollout
+       (LOCKED – SAFE)
        ========================= */
     stage('Update Argo Rollout') {
+      options {
+        lock(resource: 'board-game-rollout')
+      }
       steps {
         withCredentials([usernamePassword(
           credentialsId: 'github-pat',
@@ -151,7 +158,7 @@ pipeline {
             git config user.name "Jenkins CI"
             git config user.email "jenkins@ci.local"
             git add rollout.yaml
-            git commit -m "canary: 30% rollout ${IMAGE_TAG}" || true
+            git commit -m "canary: update to ${IMAGE_TAG}" || true
             git push origin main
           '''
         }
