@@ -18,13 +18,14 @@ pipeline {
     /* =========================
        SHARED CACHE (PVC)
        ========================= */
-    MAVEN_OPTS       = "-Dmaven.repo.local=/cache/maven"
-    TRIVY_CACHE_DIR  = "/cache/trivy"
+    MAVEN_OPTS      = "-Dmaven.repo.local=/cache/maven"
+    TRIVY_CACHE_DIR = "/cache/trivy"
   }
 
   options {
     timestamps()
-    disableConcurrentBuilds()
+    // ✅ ALLOW concurrent builds (important)
+    disableConcurrentBuilds(false)
   }
 
   stages {
