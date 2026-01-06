@@ -90,6 +90,23 @@ pipeline {
         }
       }
     }
+
+    /* ================= REGISTER BUILD ARTIFACT ================= */
+    stage('Register Build Artifact') {
+      steps {
+        script {
+          echo "Registering Docker image metadata to CloudBees Platform"
+
+          registerBuildArtifactMetadata(
+            name: "board-games-backend",
+            url: "docker.io/${IMAGE_NAME}:${IMAGE_TAG}",
+            version: "${IMAGE_TAG}",
+            label: "main,ci",
+            type: "docker"
+          )
+        }
+      }
+    }
   }
 
   post {
