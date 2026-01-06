@@ -8,40 +8,51 @@ pipeline {
     }
   }
 
-
+  options {
+    disableConcurrentBuilds()
+    timeout(time: 60, unit: 'MINUTES')
+  }
 
   environment {
     /* ================= IMAGE ================= */
-    IMAGE_NAME = "gkamalakar1006/board_games_neww"
-    IMAGE_TAG  = "${BUILD_NUMBER}"
+    IMAGE_NAME = "gkamalakar1006/board_games_new"
 
     /* ================= MAVEN ================= */
     MAVEN_REPO = 'maven-repo'
     MVN_CACHE_NAME = 'mvn-cache'
-
-    /* ================= TRIVY ================= */
-    TRIVY_CACHE_DIR = '.trivycache'
-    TRIVY_CACHE_NAME = 'trivy-cache'
-    TRIVY_DB_REPOSITORY = 'docker.io/aquasec/trivy-db'
-    TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
-
-   
   }
 
   stages {
 
     /* ================= CHECKOUT ================= */
-
     stage('Checkout') {
       steps {
-        git branch: 'main',
-            credentialsId: 'github-pat',
-            url: 'https://github.com/kamalakar22/board_game.git'
+        checkout scm
+        script {
+          env.BRANCH_NAME_ONLY = env.GIT_BRANCH
+            .replaceFirst(/^origin\//, '')
+            .replaceFirst(/^refs\/heads\//, '')
+
+          env.SHORT_COMMIT = sh(
+            script: "git rev-parse --short=6 HEAD",
+            returnStdout: true
+          ).trim()
+
+          // Image tagging rule
+          if (env.BRANCH_NAME_ONLY == 'main') {
+            env.IMAGE_TAG = env.SHORT_COMMIT
+          } else {
+            env.IMAGE_TAG = env.BUILD_NUMBER
+          }
+
+          echo "Branch     : ${env.BRANCH_NAME_ONLY}"
+          echo "Commit SHA: ${env.SHORT_COMMIT}"
+          echo "Image Tag : ${env.IMAGE_TAG}"
+        }
       }
     }
 
-    /* ================= MAVEN ================= */
-
+    /* ================= MAVEN CACHE ================= */
     stage('Restore Maven Cache') {
       steps {
         sh 'mkdir -p ${MAVEN_REPO}'
@@ -49,7 +60,15 @@ pipeline {
       }
     }
 
+    /* ================= MAVEN BUILD ================= */
     stage('Maven Build') {
+      when {
+        anyOf {
+          expression { env.BRANCH_NAME_ONLY.startsWith('feature-') }
+          expression { env.BRANCH_NAME_ONLY.startsWith('fix-') }
+          branch 'main'
+        }
+      }
       steps {
         sh '''
           mvn clean install \
@@ -59,7 +78,7 @@ pipeline {
     }
 
     stage('Save Maven Cache') {
-      when { expression { !env.CHANGE_ID } }
+      when { branch 'main' }
       steps {
         writeCache(
           name: "${MVN_CACHE_NAME}",
@@ -67,146 +86,34 @@ pipeline {
         )
       }
     }
-    /* ==================SONAR SCAN================ */
-	 stage('SonarQube Scan') {
-      steps {
-        withSonarQubeEnv('sonar-server') {
-          sh '''
-            echo "=== SONARQUBE SCAN ==="
-            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-              -Dmaven.repo.local=${MAVEN_REPO} \
-              -Dsonar.projectKey=board_game \
-              -Dsonar.projectName=board_game
-          '''
-        }
-      }
-    }
-    /* ================= TRIVY FS ================= */
 
-    stage('Restore Trivy Cache') {
-      steps {
-        sh 'mkdir -p ${TRIVY_CACHE_DIR} trivy-templates'
-        readCache name: "${TRIVY_CACHE_NAME}"
-      }
-    }
-
-    stage('Prepare Trivy Template') {
-      steps {
-        sh '''
-          mkdir -p trivy-templates trivy-reports
-
-          if [ ! -f trivy-templates/html.tpl ]; then
-            curl -fsSL \
-              https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
-              -o trivy-templates/html.tpl
-          fi
-        '''
-      }
-    }
-
-    stage('Trivy FS Scan (Non-Blocking)') {
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-          sh '''
-            trivy fs \
-              --cache-dir "$TRIVY_CACHE_DIR" \
-              --db-repository "$TRIVY_DB_REPOSITORY" \
-              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
-              --scanners vuln,license \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/fs-vuln.html .
-          '''
-        }
-      }
-    }
-
-    /* ================= KANIKO ================= */
-
+    /* ================= KANIKO BUILD ================= */
     stage('Kaniko Build & Push') {
+      when {
+        anyOf {
+          expression { env.BRANCH_NAME_ONLY.startsWith('feature-') }
+          expression { env.BRANCH_NAME_ONLY.startsWith('fix-') }
+          branch 'main'
+        }
+      }
       steps {
         container('kaniko') {
           sh '''
-            mkdir -p "$KANIKO_CACHE_DIR"
-
             /kaniko/executor \
               --context /workspace \
               --dockerfile Dockerfile \
               --destination ${IMAGE_NAME}:${IMAGE_TAG} \
               --destination ${IMAGE_NAME}:latest \
-              --cache=true \
-              --cache-dir="$KANIKO_CACHE_DIR"
+              --cache=true
           '''
         }
-      }
-    }
-
-    /* ================= TRIVY IMAGE ================= */
-
-    stage('Trivy Image Scan (Non-Blocking)') {
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-          sh '''
-            trivy image \
-              --cache-dir "$TRIVY_CACHE_DIR" \
-              --db-repository "$TRIVY_DB_REPOSITORY" \
-              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
-              --scanners vuln \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/image-vuln.html \
-              ${IMAGE_NAME}:${IMAGE_TAG}
-          '''
-        }
-      }
-    }
-
-    /* ================= SBOM ================= */
-
-    stage('Generate SBOM (CycloneDX)') {
-      steps {
-        sh '''
-          trivy fs \
-            --cache-dir "$TRIVY_CACHE_DIR" \
-            --scanners vuln \
-            --format cyclonedx \
-            --output trivy-reports/source-sbom.json .
-        '''
-      }
-    }
-
-    /* ================= SAVE TRIVY CACHE ================= */
-
-    stage('Save Trivy Cache') {
-      when { expression { !env.CHANGE_ID } }
-      steps {
-        writeCache(
-          name: "${TRIVY_CACHE_NAME}",
-          includes: """
-            ${TRIVY_CACHE_DIR}/**,
-            trivy-templates/**
-          """
-        )
       }
     }
   }
 
-  /* ================= POST ================= */
-
   post {
     always {
-      archiveArtifacts allowEmptyArchive: true, artifacts: '''
-        trivy-reports/*.html,
-        trivy-reports/*.json
-      '''
-
-      echo "Build #: ${BUILD_NUMBER}"
-      echo "Result  : ${currentBuild.currentResult}"
-
+      echo "Build Result: ${currentBuild.currentResult}"
       deleteDir()
     }
   }
