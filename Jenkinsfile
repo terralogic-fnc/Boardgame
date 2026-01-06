@@ -12,7 +12,7 @@ pipeline {
 
   environment {
     /* ================= IMAGE ================= */
-    IMAGE_NAME = "gkamalakar1006/board_games_new"
+    IMAGE_NAME = "gkamalakar1006/board_games_neww"
     IMAGE_TAG  = "${BUILD_NUMBER}"
 
     /* ================= MAVEN ================= */
