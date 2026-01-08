@@ -1,124 +1,116 @@
 pipeline {
   agent {
     kubernetes {
-      cloud 'eks-agent'
+      cloud 'terralogic-eks-agent'
+      namespace 'cloudbees-builds'
       inheritFrom 'jenkins-kaniko-agent'
       defaultContainer 'jnlp'
     }
   }
 
-  environment {
-    IMAGE_NAME = "kamalakar2210/board_games"
-    IMAGE_TAG  = "${BUILD_NUMBER}"
-
-    ARGO_REPO = "github.com/kamalakar22/argo-deploy.git"
-    ARGO_DIR  = "argo-deploy"
-    MANIFESTS = "manifests"
-
-    /* =========================
-       SHARED CACHE (PVC)
-       ========================= */
-    MAVEN_OPTS      = "-Dmaven.repo.local=/cache/maven"
-    TRIVY_CACHE_DIR = "/cache/trivy"
+  options {
+    skipDefaultCheckout true
+    disableConcurrentBuilds()
+    durabilityHint('PERFORMANCE_OPTIMIZED')
   }
 
-  /*
-   * IMPORTANT:
-   * - Concurrency is ENABLED by default
-   * - DO NOT add disableConcurrentBuilds()
-   */
-  options {
-    timestamps()
+  environment {
+    /* ================= MAVEN ================= */
+    MAVEN_REPO     = 'maven-repo'
+    MVN_CACHE_NAME = 'mvn-cache'
+
+    /* ================= TRIVY ================= */
+    TRIVY_CACHE_DIR          = '.trivycache'
+    TRIVY_DB_REPOSITORY      = 'docker.io/aquasec/trivy-db'
+    TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
+
+    /* ================= KANIKO ================= */
+    KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
   }
 
   stages {
 
-    /* =========================
-       Verify Agent & Cache
-       ========================= */
-    stage('Verify Agent') {
+    /* ================= SCM CHECKOUT ================= */
+    stage('Checkout') {
       steps {
-        sh '''
-          echo "User:"
-          whoami
-
-          echo "Java & Maven:"
-          mvn -v
-
-          echo "Trivy:"
-          trivy --version || true
-
-          echo "Cache contents:"
-          ls -lah /cache || true
-        '''
+        checkout([
+          $class: 'GitSCM',
+          branches: [[name: "${branchName}"]],
+          userRemoteConfigs: [[
+            url: "${repoUrl}",
+            credentialsId: "${gitCredentials}"
+          ]]
+        ])
       }
     }
 
-    /* =========================
-       Maven Build (ONCE)
-       ========================= */
+    /* ================= DERIVE IMAGE NAME ================= */
+    stage('Derive Image Name') {
+      steps {
+        script {
+          def repo = sh(
+            script: "basename -s .git ${repoUrl}",
+            returnStdout: true
+          ).trim()
+
+          env.IMAGE_NAME = "docker.io/gkamalakar1006/${repo}"
+          env.IMAGE_TAG  = "${BUILD_NUMBER}"
+
+          echo "Image to build: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
+        }
+      }
+    }
+
+    /* ================= RESTORE MAVEN CACHE ================= */
+    stage('Restore Maven Cache') {
+      steps {
+        sh "mkdir -p ${MAVEN_REPO}"
+        readCache name: "${MVN_CACHE_NAME}"
+      }
+    }
+
+    /* ================= MAVEN BUILD ================= */
     stage('Maven Build') {
       steps {
-        sh '''
-          echo "=== MAVEN BUILD ==="
-          mvn clean package -DskipTests
-        '''
+        sh """
+          mvn clean install \
+            -Dmaven.repo.local=${MAVEN_REPO} \
+            -DskipTests
+        """
       }
     }
 
-    /* =========================
-       SonarQube Scan
-       ========================= */
+    /* ================= SAVE MAVEN CACHE ================= */
+    stage('Save Maven Cache') {
+      steps {
+        writeCache(
+          name: "${MVN_CACHE_NAME}",
+          includes: "${MAVEN_REPO}/**"
+        )
+      }
+    }
+
+    /* ================= SONARQUBE SCAN ================= */
     stage('SonarQube Scan') {
       steps {
-        withSonarQubeEnv('sonarqube') {
-          sh '''
-            echo "=== SONAR ANALYSIS ==="
-
-            mvn -DskipTests \
-              -Dsonar.projectKey=board-game \
-              -Dsonar.projectName=board-game \
-              -Dsonar.java.binaries=target/classes \
-              org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar
-          '''
+        withSonarQubeEnv('sonar-server') {
+          sh """
+            mvn \
+              -Dmaven.repo.local=${MAVEN_REPO} \
+              org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+              -Dsonar.projectKey=${sonarProjectKey} \
+              -Dsonar.projectName=${sonarProjectKey}
+          """
         }
       }
     }
 
-    /* =========================
-       Trivy FS Scan & SBOM
-       ========================= */
-    stage('Trivy FS Scan & SBOM') {
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-          sh '''
-            mkdir -p trivy-reports sbom
-
-            trivy fs \
-              --cache-dir ${TRIVY_CACHE_DIR} \
-              --scanners vuln \
-              --format table \
-              --output trivy-reports/fs-vuln.txt .
-
-            trivy fs \
-              --cache-dir ${TRIVY_CACHE_DIR} \
-              --scanners vuln,license \
-              --format cyclonedx \
-              --output sbom/sbom-fs.json .
-          '''
-        }
-      }
-    }
-
-    /* =========================
-       Kaniko Build & Push
-       ========================= */
+    /* ================= KANIKO BUILD & PUSH ================= */
     stage('Kaniko Build & Push') {
       steps {
         container('kaniko') {
           sh '''
-            echo "Preparing Kaniko cache..."
-            mkdir -p /cache/kaniko
+            mkdir -p "$KANIKO_CACHE_DIR"
 
             /kaniko/executor \
               --context /workspace \
@@ -126,53 +118,61 @@ pipeline {
               --destination ${IMAGE_NAME}:${IMAGE_TAG} \
               --destination ${IMAGE_NAME}:latest \
               --cache=true \
-              --cache-dir=/cache/kaniko
+              --cache-dir="$KANIKO_CACHE_DIR"
           '''
         }
       }
     }
 
-    /* =========================
-       Update Argo Rollout
-       (LOCKED – SAFE)
-       ========================= */
-    stage('Update Argo Rollout') {
-      options {
-        lock(resource: 'board-game-rollout')
-      }
+    /* ================= ARGO CD DEPLOY (GITOPS) ================= */
+    stage('Argo CD Deploy (GitOps)') {
       steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'github-pat',
-          usernameVariable: 'GIT_USER',
-          passwordVariable: 'GIT_TOKEN'
-        )]) {
+        withCredentials([
+          usernamePassword(
+            credentialsId: 'gitops-github-token',
+            usernameVariable: 'GIT_USER',
+            passwordVariable: 'GIT_TOKEN'
+          )
+        ]) {
           sh '''
-            rm -rf ${ARGO_DIR}
-            git clone https://${GIT_USER}:${GIT_TOKEN}@${ARGO_REPO}
-            cd ${ARGO_DIR}/${MANIFESTS}
+            set -e
+            echo "Updating GitOps repository for Argo CD deployment"
 
-            echo "Updating rollout image to ${IMAGE_NAME}:${IMAGE_TAG}"
+            rm -rf argo-deploy
+            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/kamalakar22/argo-deploy.git
+            cd argo-deploy
 
-            sed -i "s|image: ${IMAGE_NAME}:.*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" rollout.yaml
+            sed -i "s|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" manifests/deployment-service.yaml
 
-            git config user.name "Jenkins CI"
-            git config user.email "jenkins@ci.local"
-            git add rollout.yaml
-            git commit -m "canary: update to ${IMAGE_TAG}" || true
+            git config user.email "jenkins@cloudbees.local"
+            git config user.name "jenkins"
+
+            git add manifests/deployment-service.yaml
+            git commit -m "Deploy ${IMAGE_NAME}:${IMAGE_TAG} (Build #${BUILD_NUMBER})"
             git push origin main
+
+            echo "GitOps repo updated. Argo CD will auto-sync."
           '''
         }
       }
     }
   }
 
+  /* ================= POST ================= */
   post {
     always {
+      // Avoid archive warnings when Trivy is disabled
+      sh 'mkdir -p trivy-reports || true'
+
       archiveArtifacts allowEmptyArchive: true, artifacts: '''
-        trivy-reports/*,
-        sbom/*.json
+        trivy-reports/*.html,
+        trivy-reports/*.json
       '''
-      echo "Pipeline result: ${currentBuild.currentResult}"
+
+      echo "Build #: ${BUILD_NUMBER}"
+      echo "Result  : ${currentBuild.currentResult}"
+
+      deleteDir()
     }
   }
 }
