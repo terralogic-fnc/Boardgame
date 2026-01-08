@@ -66,9 +66,11 @@ pipeline {
       steps {
         withSonarQubeEnv('sonar-server') {
           sh '''
-            mvn sonar:sonar \
+          echo "=== SONARQUBE SCAN ==="
+            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
               -Dmaven.repo.local=${MAVEN_REPO} \
-              -Dsonar.projectKey=board_game
+              -Dsonar.projectKey=board_game \
+              -Dsonar.projectName=board_game
           '''
         }
       }
