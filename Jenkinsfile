@@ -8,20 +8,21 @@ pipeline {
     }
   }
 
-  options {
-    skipDefaultCheckout true
-    disableConcurrentBuilds()
-    durabilityHint('PERFORMANCE_OPTIMIZED')
-  }
+
 
   environment {
+    /* ================= IMAGE ================= */
+    IMAGE_NAME = "gkamalakar1006/boardgames"
+    IMAGE_TAG  = "${BUILD_NUMBER}"
+
     /* ================= MAVEN ================= */
-    MAVEN_REPO     = 'maven-repo'
+    MAVEN_REPO = 'maven-repo'
     MVN_CACHE_NAME = 'mvn-cache'
 
     /* ================= TRIVY ================= */
-    TRIVY_CACHE_DIR          = '.trivycache'
-    TRIVY_DB_REPOSITORY      = 'docker.io/aquasec/trivy-db'
+    TRIVY_CACHE_DIR = '.trivycache'
+    TRIVY_CACHE_NAME = 'trivy-cache'
+    TRIVY_DB_REPOSITORY = 'docker.io/aquasec/trivy-db'
     TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
 
     /* ================= KANIKO ================= */
@@ -30,58 +31,36 @@ pipeline {
 
   stages {
 
-    /* ================= SCM CHECKOUT ================= */
+    /* ================= CHECKOUT ================= */
+
     stage('Checkout') {
       steps {
-        checkout([
-          $class: 'GitSCM',
-          branches: [[name: "${branchName}"]],
-          userRemoteConfigs: [[
-            url: "${repoUrl}",
-            credentialsId: "${gitCredentials}"
-          ]]
-        ])
+        git branch: 'main',
+            credentialsId: 'github-pat',
+            url: 'https://github.com/kamalakar22/board_game.git'
       }
     }
 
-    /* ================= DERIVE IMAGE NAME ================= */
-    stage('Derive Image Name') {
-      steps {
-        script {
-          def repo = sh(
-            script: "basename -s .git ${repoUrl}",
-            returnStdout: true
-          ).trim()
+    /* ================= MAVEN ================= */
 
-          env.IMAGE_NAME = "docker.io/gkamalakar1006/${repo}"
-          env.IMAGE_TAG  = "${BUILD_NUMBER}"
-
-          echo "Image to build: ${env.IMAGE_NAME}:${env.IMAGE_TAG}"
-        }
-      }
-    }
-
-    /* ================= RESTORE MAVEN CACHE ================= */
     stage('Restore Maven Cache') {
       steps {
-        sh "mkdir -p ${MAVEN_REPO}"
+        sh 'mkdir -p ${MAVEN_REPO}'
         readCache name: "${MVN_CACHE_NAME}"
       }
     }
 
-    /* ================= MAVEN BUILD ================= */
     stage('Maven Build') {
       steps {
-        sh """
+        sh '''
           mvn clean install \
-            -Dmaven.repo.local=${MAVEN_REPO} \
-            -DskipTests
-        """
+            -Dmaven.repo.local=${MAVEN_REPO}
+        '''
       }
     }
 
-    /* ================= SAVE MAVEN CACHE ================= */
     stage('Save Maven Cache') {
+      when { expression { !env.CHANGE_ID } }
       steps {
         writeCache(
           name: "${MVN_CACHE_NAME}",
@@ -89,23 +68,64 @@ pipeline {
         )
       }
     }
-
-    /* ================= SONARQUBE SCAN ================= */
-    stage('SonarQube Scan') {
+    /* ==================SONAR SCAN================ */
+	 stage('SonarQube Scan') {
       steps {
         withSonarQubeEnv('sonar-server') {
-          sh """
-            mvn \
+          sh '''
+            echo "=== SONARQUBE SCAN ==="
+            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
               -Dmaven.repo.local=${MAVEN_REPO} \
-              org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-              -Dsonar.projectKey=${sonarProjectKey} \
-              -Dsonar.projectName=${sonarProjectKey}
-          """
+              -Dsonar.projectKey=board_game \
+              -Dsonar.projectName=board_game
+          '''
+        }
+      }
+    }
+    /* ================= TRIVY FS ================= */
+
+    stage('Restore Trivy Cache') {
+      steps {
+        sh 'mkdir -p ${TRIVY_CACHE_DIR} trivy-templates'
+        readCache name: "${TRIVY_CACHE_NAME}"
+      }
+    }
+
+    stage('Prepare Trivy Template') {
+      steps {
+        sh '''
+          mkdir -p trivy-templates trivy-reports
+
+          if [ ! -f trivy-templates/html.tpl ]; then
+            curl -fsSL \
+              https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
+              -o trivy-templates/html.tpl
+          fi
+        '''
+      }
+    }
+
+    stage('Trivy FS Scan (Non-Blocking)') {
+      steps {
+        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+          sh '''
+            trivy fs \
+              --cache-dir "$TRIVY_CACHE_DIR" \
+              --db-repository "$TRIVY_DB_REPOSITORY" \
+              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
+              --scanners vuln,license \
+              --severity LOW,MEDIUM,HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format template \
+              --template @trivy-templates/html.tpl \
+              --output trivy-reports/fs-vuln.html .
+          '''
         }
       }
     }
 
-    /* ================= KANIKO BUILD & PUSH ================= */
+    /* ================= KANIKO ================= */
+
     stage('Kaniko Build & Push') {
       steps {
         container('kaniko') {
@@ -124,46 +144,62 @@ pipeline {
       }
     }
 
-    /* ================= ARGO CD DEPLOY (GITOPS) ================= */
-    stage('Argo CD Deploy (GitOps)') {
+    /* ================= TRIVY IMAGE ================= */
+
+    stage('Trivy Image Scan (Non-Blocking)') {
       steps {
-        withCredentials([
-          usernamePassword(
-            credentialsId: 'gitops-github-token',
-            usernameVariable: 'GIT_USER',
-            passwordVariable: 'GIT_TOKEN'
-          )
-        ]) {
+        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
           sh '''
-            set -e
-            echo "Updating GitOps repository for Argo CD deployment"
-
-            rm -rf argo-deploy
-            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/kamalakar22/argo-deploy.git
-            cd argo-deploy
-
-            sed -i "s|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" manifests/deployment-service.yaml
-
-            git config user.email "jenkins@cloudbees.local"
-            git config user.name "jenkins"
-
-            git add manifests/deployment-service.yaml
-            git commit -m "Deploy ${IMAGE_NAME}:${IMAGE_TAG} (Build #${BUILD_NUMBER})"
-            git push origin main
-
-            echo "GitOps repo updated. Argo CD will auto-sync."
+            trivy image \
+              --cache-dir "$TRIVY_CACHE_DIR" \
+              --db-repository "$TRIVY_DB_REPOSITORY" \
+              --java-db-repository "$TRIVY_JAVA_DB_REPOSITORY" \
+              --scanners vuln \
+              --severity LOW,MEDIUM,HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format template \
+              --template @trivy-templates/html.tpl \
+              --output trivy-reports/image-vuln.html \
+              ${IMAGE_NAME}:${IMAGE_TAG}
           '''
         }
+      }
+    }
+
+    /* ================= SBOM ================= */
+
+    stage('Generate SBOM (CycloneDX)') {
+      steps {
+        sh '''
+          trivy fs \
+            --cache-dir "$TRIVY_CACHE_DIR" \
+            --scanners vuln \
+            --format cyclonedx \
+            --output trivy-reports/source-sbom.json .
+        '''
+      }
+    }
+
+    /* ================= SAVE TRIVY CACHE ================= */
+
+    stage('Save Trivy Cache') {
+      when { expression { !env.CHANGE_ID } }
+      steps {
+        writeCache(
+          name: "${TRIVY_CACHE_NAME}",
+          includes: """
+            ${TRIVY_CACHE_DIR}/**,
+            trivy-templates/**
+          """
+        )
       }
     }
   }
 
   /* ================= POST ================= */
+
   post {
     always {
-      // Avoid archive warnings when Trivy is disabled
-      sh 'mkdir -p trivy-reports || true'
-
       archiveArtifacts allowEmptyArchive: true, artifacts: '''
         trivy-reports/*.html,
         trivy-reports/*.json
