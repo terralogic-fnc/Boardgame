@@ -3,7 +3,7 @@ pipeline {
   stages {
     stage('marker') {
       steps {
-        echo 'This Jenkinsfile is only a marker. Template Jenkinsfile will run.'
+        echo 'Marker Jenkinsfile for CloudBees multibranch template'
       }
     }
   }
