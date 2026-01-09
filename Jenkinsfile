@@ -25,6 +25,8 @@ pipeline {
     TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
 
     KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
+
+    EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com,harshavardhan.s@terralogic.com'
   }
 
   stages {
@@ -65,7 +67,6 @@ pipeline {
       steps {
         withSonarQubeEnv('sonar-server') {
           sh '''
-          echo "=== SONARQUBE SCAN ==="
             mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
               -Dmaven.repo.local=${MAVEN_REPO} \
               -Dsonar.projectKey=board_game \
@@ -180,14 +181,14 @@ pipeline {
         ]) {
           sh '''
             git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/deploy-to-argocd.git
-            cd argo-deploy
+            cd deploy-to-argocd
 
             sed -i "s|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" manifests/deployment-service.yaml
 
             git config user.email "jenkins@cloudbees.local"
             git config user.name "jenkins"
 
-            git commit -am "Deploy ${IMAGE_NAME}:${IMAGE_TAG}"
+            git commit -am "Deploy ${IMAGE_NAME}:${IMAGE_TAG}" || echo "No changes to commit"
             git push origin main
           '''
         }
@@ -207,13 +208,43 @@ pipeline {
     }
   }
 
+  /* ================= POST ACTIONS ================= */
+
   post {
+    success {
+      emailext(
+        to: "${EMAIL_RECIPIENTS}",
+        subject: "✅ SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+        body: """
+        <h3>Build Succeeded</h3>
+        <p><b>Job:</b> ${env.JOB_NAME}</p>
+        <p><b>Build:</b> ${env.BUILD_NUMBER}</p>
+        <p><b>Image:</b> ${IMAGE_NAME}:${IMAGE_TAG}</p>
+        <p><a href="${env.BUILD_URL}">View Build</a></p>
+        """
+      )
+    }
+
+    failure {
+      emailext(
+        to: "${EMAIL_RECIPIENTS}",
+        subject: "❌ FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+        body: """
+        <h3>Build Failed</h3>
+        <p><b>Job:</b> ${env.JOB_NAME}</p>
+        <p><b>Build:</b> ${env.BUILD_NUMBER}</p>
+        <p><b>Status:</b> ${currentBuild.currentResult}</p>
+        <p><a href="${env.BUILD_URL}">Check Console Output</a></p>
+        """
+      )
+    }
+
     always {
       archiveArtifacts allowEmptyArchive: true, artifacts: '''
         trivy-reports/*.html,
         trivy-reports/*.json
       '''
-      echo "Result: ${currentBuild.currentResult}"
+      echo "Final Result: ${currentBuild.currentResult}"
       deleteDir()
     }
   }
