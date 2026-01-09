@@ -174,13 +174,13 @@ pipeline {
       steps {
         withCredentials([
           usernamePassword(
-            credentialsId: 'gitops-github-token',
+            credentialsId: 'gitops-token',
             usernameVariable: 'GIT_USER',
             passwordVariable: 'GIT_TOKEN'
           )
         ]) {
           sh '''
-            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/kamalakar22/argo-deploy.git
+            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/deploy-to-argocd.git
             cd argo-deploy
 
             sed -i "s|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" manifests/deployment-service.yaml
