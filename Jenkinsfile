@@ -14,11 +14,6 @@ pipeline {
 
   environment {
     IMAGE_NAME = "gkamalakar1006/boardgames"
-
-    MAVEN_REPO     = 'maven-repo'
-    MVN_CACHE_NAME = 'mvn-cache'
-
-
     EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com'
   }
 
@@ -38,67 +33,26 @@ pipeline {
       }
     }
 
-    /* ================= MAVEN ================= */
-
-    stage('Restore Maven Cache') {
-      steps {
-        sh 'mkdir -p ${MAVEN_REPO}'
-        readCache name: MVN_CACHE_NAME
-      }
-    }
-
-    stage('Maven Build') {
-      steps {
-        sh 'mvn clean install -Dmaven.repo.local=${MAVEN_REPO}'
-      }
-    }
-
-    stage('Save Maven Cache') {
-      when { branch 'main' }
-      steps {
-        writeCache name: MVN_CACHE_NAME, includes: "${MAVEN_REPO}/**"
-      }
-    }
-
-    /* ================= SONAR ================= */
-
-    stage('SonarQube Scan') {
-      steps {
-        withSonarQubeEnv('sonar-server') {
-          sh """
-            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-              -Dmaven.repo.local=${MAVEN_REPO} \
-              -Dsonar.projectKey=board_game \
-              -Dsonar.projectName=board_game
-          """
-        }
-      }
-    }
-
-    /* ================= DOCKER BUILD ================= */
+    /* ================= KANIKO ================= */
 
     stage('Kaniko Build & Push') {
       when { branch 'main' }
       steps {
         container('kaniko') {
           sh """
-            mkdir -p ${KANIKO_CACHE_DIR}
-
             /kaniko/executor \
               --context /workspace \
               --dockerfile Dockerfile \
               --destination ${IMAGE_NAME}:${IMAGE_TAG} \
-              --destination ${IMAGE_NAME}:latest 
-    
-
+              --destination ${IMAGE_NAME}:latest
           """
         }
       }
     }
 
-    /* ================= GITOPS DEPLOY ================= */
+    /* ================= ARGO CD (GITOPS) ================= */
 
-    stage('Update Argo CD Repo (Rollout Trigger)') {
+    stage('Update Argo CD Repo (Trigger Rollout)') {
       when { branch 'main' }
       steps {
         withCredentials([
@@ -117,8 +71,6 @@ pipeline {
             echo "Updating image tag to ${IMAGE_TAG}"
             sed -i 's|tag:.*|tag: \"${IMAGE_TAG}\"|g' values.yaml
 
-            git status
-
             git config user.email "jenkins@cloudbees.local"
             git config user.name "jenkins"
 
@@ -136,7 +88,7 @@ pipeline {
         to: "${EMAIL_RECIPIENTS}",
         subject: "✅ SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
         body: """
-        <h3>CI + GitOps Rollout Triggered</h3>
+        <h3>Image Built & Rollout Triggered</h3>
         <p><b>Image:</b> ${IMAGE_NAME}:${IMAGE_TAG}</p>
         <p>Argo CD will sync and Argo Rollouts will perform canary deployment.</p>
         """
