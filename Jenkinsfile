@@ -7,10 +7,7 @@ pipeline {
     }
   }
 
-  options {
-    
-    durabilityHint('PERFORMANCE_OPTIMIZED')
-  }
+
 
   environment {
     /* ================= IMAGE ================= */
