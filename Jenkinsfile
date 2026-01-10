@@ -13,17 +13,20 @@ pipeline {
   }
 
   environment {
+    /* ================= IMAGE CONFIG ================= */
     IMAGE_NAME = "gkamalakar1006/boardgames"
-    IMAGE_TAG  = "${GIT_COMMIT.take(6)}"
 
+    /* ================= MAVEN CACHE ================= */
     MAVEN_REPO     = 'maven-repo'
     MVN_CACHE_NAME = 'mvn-cache'
 
+    /* ================= TRIVY CACHE ================= */
     TRIVY_CACHE_DIR          = '.trivycache'
     TRIVY_CACHE_NAME         = 'trivy-cache'
     TRIVY_DB_REPOSITORY      = 'docker.io/aquasec/trivy-db'
     TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
 
+    /* ================= KANIKO ================= */
     KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
 
     EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com,harshavardhan.s@terralogic.com'
@@ -31,15 +34,25 @@ pipeline {
 
   stages {
 
-    stage('Info') {
+    /* =================================================
+       INIT: DEFINE TAG STRATEGY
+       - CI tag  : build-<BUILD_NUMBER> (ALL branches)
+       - Release : <commit-6> (ONLY main)
+       ================================================= */
+    stage('Init') {
       steps {
-        echo "Branch : ${BRANCH_NAME}"
-        echo "Commit : ${GIT_COMMIT}"
-        echo "Image  : ${IMAGE_NAME}:${IMAGE_TAG}"
+        script {
+          env.CI_IMAGE_TAG      = "build-${BUILD_NUMBER}"
+          env.RELEASE_IMAGE_TAG = GIT_COMMIT.take(6)
+        }
+
+        echo "Branch             : ${BRANCH_NAME}"
+        echo "CI Image Tag       : ${CI_IMAGE_TAG}"
+        echo "Release Image Tag  : ${RELEASE_IMAGE_TAG}"
       }
     }
 
-    /* ================= MAVEN ================= */
+    /* ================= MAVEN BUILD ================= */
 
     stage('Restore Maven Cache') {
       steps {
@@ -76,56 +89,40 @@ pipeline {
       }
     }
 
-    /* ================= TRIVY FS ================= */
-
-    stage('Restore Trivy Cache') {
+    /* =================================================
+       BUILD & PUSH IMAGE FOR ALL BRANCHES
+       Tag: build-<BUILD_NUMBER>
+       ================================================= */
+    stage('Kaniko Build & Push (CI Image)') {
       steps {
-        sh 'mkdir -p ${TRIVY_CACHE_DIR} trivy-templates trivy-reports'
-        readCache name: TRIVY_CACHE_NAME
-      }
-    }
-
-    stage('Prepare Trivy Template') {
-      steps {
-        sh '''
-          if [ ! -f trivy-templates/html.tpl ]; then
-            curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
-              -o trivy-templates/html.tpl
-          fi
-        '''
-      }
-    }
-
-    stage('Trivy FS Scan (Non-Blocking)') {
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+        container('kaniko') {
           sh '''
-            trivy fs \
-              --cache-dir ${TRIVY_CACHE_DIR} \
-              --db-repository ${TRIVY_DB_REPOSITORY} \
-              --java-db-repository ${TRIVY_JAVA_DB_REPOSITORY} \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/fs-vuln.html .
+            mkdir -p ${KANIKO_CACHE_DIR}
+
+            /kaniko/executor \
+              --context /workspace \
+              --dockerfile Dockerfile \
+              --destination ${IMAGE_NAME}:${CI_IMAGE_TAG} \
+              --cache=true \
+              --cache-dir ${KANIKO_CACHE_DIR}
           '''
         }
       }
     }
 
-    /* ================= KANIKO ================= */
-
-    stage('Kaniko Build & Push') {
+    /* =================================================
+       BUILD RELEASE IMAGE ONLY ON MAIN
+       Tag: <commit-6>
+       ================================================= */
+    stage('Kaniko Build & Push (Release Image)') {
       when { branch 'main' }
       steps {
         container('kaniko') {
           sh '''
-            mkdir -p ${KANIKO_CACHE_DIR}
             /kaniko/executor \
               --context /workspace \
               --dockerfile Dockerfile \
-              --destination ${IMAGE_NAME}:${IMAGE_TAG} \
+              --destination ${IMAGE_NAME}:${RELEASE_IMAGE_TAG} \
               --destination ${IMAGE_NAME}:latest \
               --cache=true \
               --cache-dir ${KANIKO_CACHE_DIR}
@@ -134,9 +131,27 @@ pipeline {
       }
     }
 
-    /* ================= TRIVY IMAGE ================= */
+    /* ================= TRIVY FS (MAIN ONLY) ================= */
 
-    stage('Trivy Image Scan (Non-Blocking)') {
+    stage('Trivy FS Scan (Main Only)') {
+      when { branch 'main' }
+      steps {
+        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+          sh '''
+            trivy fs \
+              --cache-dir ${TRIVY_CACHE_DIR} \
+              --db-repository ${TRIVY_DB_REPOSITORY} \
+              --java-db-repository ${TRIVY_JAVA_DB_REPOSITORY} \
+              --severity LOW,MEDIUM,HIGH,CRITICAL \
+              --ignore-unfixed .
+          '''
+        }
+      }
+    }
+
+    /* ================= TRIVY IMAGE (MAIN ONLY) ================= */
+
+    stage('Trivy Image Scan (Main Only)') {
       when { branch 'main' }
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
@@ -145,18 +160,16 @@ pipeline {
               --cache-dir ${TRIVY_CACHE_DIR} \
               --severity LOW,MEDIUM,HIGH,CRITICAL \
               --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/image-vuln.html \
-              ${IMAGE_NAME}:${IMAGE_TAG}
+              ${IMAGE_NAME}:${RELEASE_IMAGE_TAG}
           '''
         }
       }
     }
 
-    /* ================= SBOM ================= */
+    /* ================= SBOM (MAIN ONLY) ================= */
 
-    stage('Generate SBOM (CycloneDX)') {
+    stage('Generate SBOM (Main Only)') {
+      when { branch 'main' }
       steps {
         sh '''
           trivy fs \
@@ -166,32 +179,6 @@ pipeline {
         '''
       }
     }
-
-    stage('Save Trivy Cache') {
-      when { expression { !env.CHANGE_ID } }
-      steps {
-        writeCache(
-          name: TRIVY_CACHE_NAME,
-          includes: "${TRIVY_CACHE_DIR}/**,trivy-templates/**"
-        )
-      }
-    }
-
-    /* ================= ARGO CD ================= */
-
-    stage('Update Argo CD Repo (Trigger Rollout)') {
-      when { branch 'main' }
-      steps {
-        withCredentials([
-          usernamePassword(
-            credentialsId: 'gitops-token',
-            usernameVariable: 'GIT_USER',
-            passwordVariable: 'GIT_TOKEN'
-          )
-        ]) {
-          sh '''
-            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/boardgame-argo-rollouts.git
-            cd boardgame-argo-rollouts/boardgame
 
             sed -i 's|tag:.*|tag: "'${IMAGE_TAG}'"|g' values.yaml
 
