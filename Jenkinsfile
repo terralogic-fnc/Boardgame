@@ -14,22 +14,103 @@ pipeline {
 
   environment {
     IMAGE_NAME = "gkamalakar1006/boardgames"
-    EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com'
+    IMAGE_TAG  = "${GIT_COMMIT.take(6)}"
+
+    MAVEN_REPO     = 'maven-repo'
+    MVN_CACHE_NAME = 'mvn-cache'
+
+    TRIVY_CACHE_DIR          = '.trivycache'
+    TRIVY_CACHE_NAME         = 'trivy-cache'
+    TRIVY_DB_REPOSITORY      = 'docker.io/aquasec/trivy-db'
+    TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
+
+    KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
+
+    EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com,harshavardhan.s@terralogic.com'
   }
 
   stages {
 
-    /* ================= INIT ================= */
-
-    stage('Init') {
+    stage('Info') {
       steps {
-        script {
-          env.IMAGE_TAG = env.GIT_COMMIT.substring(0, 6)
+        echo "Branch : ${BRANCH_NAME}"
+        echo "Commit : ${GIT_COMMIT}"
+        echo "Image  : ${IMAGE_NAME}:${IMAGE_TAG}"
+      }
+    }
+
+    /* ================= MAVEN ================= */
+
+    stage('Restore Maven Cache') {
+      steps {
+        sh 'mkdir -p ${MAVEN_REPO}'
+        readCache name: MVN_CACHE_NAME
+      }
+    }
+
+    stage('Maven Build') {
+      steps {
+        sh 'mvn clean install -Dmaven.repo.local=${MAVEN_REPO}'
+      }
+    }
+
+    stage('Save Maven Cache') {
+      when { expression { !env.CHANGE_ID } }
+      steps {
+        writeCache name: MVN_CACHE_NAME, includes: "${MAVEN_REPO}/**"
+      }
+    }
+
+    /* ================= SONAR ================= */
+
+    stage('SonarQube Scan') {
+      steps {
+        withSonarQubeEnv('sonar-server') {
+          sh '''
+            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+              -Dmaven.repo.local=${MAVEN_REPO} \
+              -Dsonar.projectKey=board_game \
+              -Dsonar.projectName=board_game
+          '''
         }
-        echo "Branch     : ${BRANCH_NAME}"
-        echo "Commit     : ${GIT_COMMIT}"
-        echo "Image Tag  : ${IMAGE_TAG}"
-        echo "Full Image : ${IMAGE_NAME}:${IMAGE_TAG}"
+      }
+    }
+
+    /* ================= TRIVY FS ================= */
+
+    stage('Restore Trivy Cache') {
+      steps {
+        sh 'mkdir -p ${TRIVY_CACHE_DIR} trivy-templates trivy-reports'
+        readCache name: TRIVY_CACHE_NAME
+      }
+    }
+
+    stage('Prepare Trivy Template') {
+      steps {
+        sh '''
+          if [ ! -f trivy-templates/html.tpl ]; then
+            curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
+              -o trivy-templates/html.tpl
+          fi
+        '''
+      }
+    }
+
+    stage('Trivy FS Scan (Non-Blocking)') {
+      steps {
+        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+          sh '''
+            trivy fs \
+              --cache-dir ${TRIVY_CACHE_DIR} \
+              --db-repository ${TRIVY_DB_REPOSITORY} \
+              --java-db-repository ${TRIVY_JAVA_DB_REPOSITORY} \
+              --severity LOW,MEDIUM,HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format template \
+              --template @trivy-templates/html.tpl \
+              --output trivy-reports/fs-vuln.html .
+          '''
+        }
       }
     }
 
@@ -39,18 +120,64 @@ pipeline {
       when { branch 'main' }
       steps {
         container('kaniko') {
-          sh """
+          sh '''
+            mkdir -p ${KANIKO_CACHE_DIR}
             /kaniko/executor \
               --context /workspace \
               --dockerfile Dockerfile \
               --destination ${IMAGE_NAME}:${IMAGE_TAG} \
-              --destination ${IMAGE_NAME}:latest
-          """
+              --destination ${IMAGE_NAME}:latest \
+              --cache=true \
+              --cache-dir ${KANIKO_CACHE_DIR}
+          '''
         }
       }
     }
 
-    /* ================= ARGO CD (GITOPS) ================= */
+    /* ================= TRIVY IMAGE ================= */
+
+    stage('Trivy Image Scan (Non-Blocking)') {
+      when { branch 'main' }
+      steps {
+        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+          sh '''
+            trivy image \
+              --cache-dir ${TRIVY_CACHE_DIR} \
+              --severity LOW,MEDIUM,HIGH,CRITICAL \
+              --ignore-unfixed \
+              --format template \
+              --template @trivy-templates/html.tpl \
+              --output trivy-reports/image-vuln.html \
+              ${IMAGE_NAME}:${IMAGE_TAG}
+          '''
+        }
+      }
+    }
+
+    /* ================= SBOM ================= */
+
+    stage('Generate SBOM (CycloneDX)') {
+      steps {
+        sh '''
+          trivy fs \
+            --cache-dir ${TRIVY_CACHE_DIR} \
+            --format cyclonedx \
+            --output trivy-reports/source-sbom.json .
+        '''
+      }
+    }
+
+    stage('Save Trivy Cache') {
+      when { expression { !env.CHANGE_ID } }
+      steps {
+        writeCache(
+          name: TRIVY_CACHE_NAME,
+          includes: "${TRIVY_CACHE_DIR}/**,trivy-templates/**"
+        )
+      }
+    }
+
+    /* ================= ARGO CD ================= */
 
     stage('Update Argo CD Repo (Trigger Rollout)') {
       when { branch 'main' }
@@ -62,25 +189,24 @@ pipeline {
             passwordVariable: 'GIT_TOKEN'
           )
         ]) {
-          sh """
-            echo "Cloning GitOps repo"
+          sh '''
             git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/boardgame-argo-rollouts.git
-
             cd boardgame-argo-rollouts/boardgame
 
-            echo "Updating image tag to ${IMAGE_TAG}"
-            sed -i 's|tag:.*|tag: \"${IMAGE_TAG}\"|g' values.yaml
+            sed -i 's|tag:.*|tag: "'${IMAGE_TAG}'"|g' values.yaml
 
             git config user.email "jenkins@cloudbees.local"
             git config user.name "jenkins"
 
             git commit -am "Rollout boardgame image ${IMAGE_TAG}" || echo "No changes to commit"
             git push origin main
-          """
+          '''
         }
       }
     }
   }
+
+  /* ================= POST ================= */
 
   post {
     success {
@@ -100,13 +226,18 @@ pipeline {
         to: "${EMAIL_RECIPIENTS}",
         subject: "❌ FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
         body: """
-        <h3>Pipeline Failed</h3>
+        <h3>Build Failed</h3>
         <p><b>Status:</b> ${currentBuild.currentResult}</p>
+        <p><a href="${env.BUILD_URL}">Check Console Output</a></p>
         """
       )
     }
 
     always {
+      archiveArtifacts allowEmptyArchive: true, artifacts: '''
+        trivy-reports/*.html,
+        trivy-reports/*.json
+      '''
       deleteDir()
     }
   }
