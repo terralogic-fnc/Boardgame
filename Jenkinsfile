@@ -26,7 +26,7 @@ pipeline {
 
     KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
 
-    EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com,harshavardhan.s@terralogic.com'
+    EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com'
   }
 
   stages {
@@ -85,17 +85,6 @@ pipeline {
       }
     }
 
-    stage('Prepare Trivy Template') {
-      steps {
-        sh '''
-          if [ ! -f trivy-templates/html.tpl ]; then
-            curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/html.tpl \
-              -o trivy-templates/html.tpl
-          fi
-        '''
-      }
-    }
-
     stage('Trivy FS Scan (Non-Blocking)') {
       steps {
         catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
@@ -105,10 +94,7 @@ pipeline {
               --db-repository ${TRIVY_DB_REPOSITORY} \
               --java-db-repository ${TRIVY_JAVA_DB_REPOSITORY} \
               --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/fs-vuln.html .
+              --ignore-unfixed .
           '''
         }
       }
@@ -145,31 +131,15 @@ pipeline {
               --cache-dir ${TRIVY_CACHE_DIR} \
               --severity LOW,MEDIUM,HIGH,CRITICAL \
               --ignore-unfixed \
-              --format template \
-              --template @trivy-templates/html.tpl \
-              --output trivy-reports/image-vuln.html \
               ${IMAGE_NAME}:${IMAGE_TAG}
           '''
         }
       }
     }
 
-    /* ================= SBOM ================= */
+    /* ================= ARGO CD (ROLLOUT) ================= */
 
-    stage('Generate SBOM (CycloneDX)') {
-      steps {
-        sh '''
-          trivy fs \
-            --cache-dir ${TRIVY_CACHE_DIR} \
-            --format cyclonedx \
-            --output trivy-reports/source-sbom.json .
-        '''
-      }
-    }
-
-    /* ================= ARGO CD ================= */
-
-    stage('Argo CD Deploy (GitOps)') {
+    stage('Argo CD Rollout (GitOps)') {
       when { branch 'main' }
       steps {
         withCredentials([
@@ -180,15 +150,16 @@ pipeline {
           )
         ]) {
           sh '''
-            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/deploy-to-argocd.git
-            cd deploy-to-argocd
+            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/boardgame-argo-rollouts.git
+            cd boardgame-argo-rollouts/helm/boardgame
 
-            sed -i "s|image: .*|image: ${IMAGE_NAME}:${IMAGE_TAG}|g" manifests/deployment-service.yaml
+            # Update image tag for Rollout
+            sed -i "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" values.yaml
 
             git config user.email "jenkins@cloudbees.local"
             git config user.name "jenkins"
 
-            git commit -am "Deploy ${IMAGE_NAME}:${IMAGE_TAG}" || echo "No changes to commit"
+            git commit -am "Rollout boardgame image ${IMAGE_TAG}" || echo "No changes to commit"
             git push origin main
           '''
         }
@@ -208,19 +179,15 @@ pipeline {
     }
   }
 
-  /* ================= POST ACTIONS ================= */
-
   post {
     success {
       emailext(
         to: "${EMAIL_RECIPIENTS}",
         subject: "✅ SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
         body: """
-        <h3>Build Succeeded</h3>
+        <h3>Build & Rollout Succeeded</h3>
         <p><b>Job:</b> ${env.JOB_NAME}</p>
-        <p><b>Build:</b> ${env.BUILD_NUMBER}</p>
         <p><b>Image:</b> ${IMAGE_NAME}:${IMAGE_TAG}</p>
-        <p><a href="${env.BUILD_URL}">View Build</a></p>
         """
       )
     }
@@ -230,21 +197,15 @@ pipeline {
         to: "${EMAIL_RECIPIENTS}",
         subject: "❌ FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
         body: """
-        <h3>Build Failed</h3>
+        <h3>Pipeline Failed</h3>
         <p><b>Job:</b> ${env.JOB_NAME}</p>
-        <p><b>Build:</b> ${env.BUILD_NUMBER}</p>
         <p><b>Status:</b> ${currentBuild.currentResult}</p>
-        <p><a href="${env.BUILD_URL}">Check Console Output</a></p>
         """
       )
     }
 
     always {
-      archiveArtifacts allowEmptyArchive: true, artifacts: '''
-        trivy-reports/*.html,
-        trivy-reports/*.json
-      '''
-      echo "Final Result: ${currentBuild.currentResult}"
+      archiveArtifacts allowEmptyArchive: true, artifacts: 'trivy-reports/**'
       deleteDir()
     }
   }
