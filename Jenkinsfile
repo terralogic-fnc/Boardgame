@@ -180,29 +180,12 @@ pipeline {
       }
     }
 
-    /* =================================================
-       GITOPS DEPLOY – TRIGGER ARGO ROLLOUT (MAIN ONLY)
-       ================================================= */
-    stage('Update Argo CD Repo (Trigger Rollout)') {
-      when { branch 'main' }
-      steps {
-        withCredentials([
-          usernamePassword(
-            credentialsId: 'gitops-token',
-            usernameVariable: 'GIT_USER',
-            passwordVariable: 'GIT_TOKEN'
-          )
-        ]) {
-          sh '''
-            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/boardgame-argo-rollouts.git
-            cd boardgame-argo-rollouts/boardgame
-
-            sed -i "s|tag:.*|tag: ${RELEASE_IMAGE_TAG}|g" values.yaml
+            sed -i 's|tag:.*|tag: "'${IMAGE_TAG}'"|g' values.yaml
 
             git config user.email "jenkins@cloudbees.local"
             git config user.name "jenkins"
 
-            git commit -am "Deploy boardgame ${RELEASE_IMAGE_TAG}" || echo "No changes"
+            git commit -am "Rollout boardgame image ${IMAGE_TAG}" || echo "No changes to commit"
             git push origin main
           '''
         }
@@ -210,7 +193,7 @@ pipeline {
     }
   }
 
-  /* ================= POST ACTIONS ================= */
+  /* ================= POST ================= */
 
   post {
     success {
@@ -218,9 +201,9 @@ pipeline {
         to: "${EMAIL_RECIPIENTS}",
         subject: "✅ SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
         body: """
-        <h3>CI & GitOps Completed</h3>
-        <p><b>CI Image:</b> ${IMAGE_NAME}:${CI_IMAGE_TAG}</p>
-        <p><b>Release Image (main):</b> ${IMAGE_NAME}:${RELEASE_IMAGE_TAG}</p>
+        <h3>Image Built & Rollout Triggered</h3>
+        <p><b>Image:</b> ${IMAGE_NAME}:${IMAGE_TAG}</p>
+        <p>Argo CD will sync and Argo Rollouts will perform canary deployment.</p>
         """
       )
     }
@@ -230,13 +213,18 @@ pipeline {
         to: "${EMAIL_RECIPIENTS}",
         subject: "❌ FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
         body: """
-        <h3>Pipeline Failed</h3>
-        <p>Status: ${currentBuild.currentResult}</p>
+        <h3>Build Failed</h3>
+        <p><b>Status:</b> ${currentBuild.currentResult}</p>
+        <p><a href="${env.BUILD_URL}">Check Console Output</a></p>
         """
       )
     }
 
     always {
+      archiveArtifacts allowEmptyArchive: true, artifacts: '''
+        trivy-reports/*.html,
+        trivy-reports/*.json
+      '''
       deleteDir()
     }
   }
