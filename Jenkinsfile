@@ -14,15 +14,9 @@ pipeline {
 
   environment {
     IMAGE_NAME = "gkamalakar1006/boardgames"
-    IMAGE_TAG  = "${GIT_COMMIT.take(6)}"
 
     MAVEN_REPO     = 'maven-repo'
     MVN_CACHE_NAME = 'mvn-cache'
-
-    TRIVY_CACHE_DIR          = '.trivycache'
-    TRIVY_CACHE_NAME         = 'trivy-cache'
-    TRIVY_DB_REPOSITORY      = 'docker.io/aquasec/trivy-db'
-    TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
 
     KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
 
@@ -31,11 +25,17 @@ pipeline {
 
   stages {
 
-    stage('Info') {
+    /* ================= INIT ================= */
+
+    stage('Init') {
       steps {
-        echo "Branch : ${BRANCH_NAME}"
-        echo "Commit : ${GIT_COMMIT}"
-        echo "Image  : ${IMAGE_NAME}:${IMAGE_TAG}"
+        script {
+          env.IMAGE_TAG = env.GIT_COMMIT.substring(0, 6)
+        }
+        echo "Branch     : ${BRANCH_NAME}"
+        echo "Commit     : ${GIT_COMMIT}"
+        echo "Image Tag  : ${IMAGE_TAG}"
+        echo "Full Image : ${IMAGE_NAME}:${IMAGE_TAG}"
       }
     }
 
@@ -55,7 +55,7 @@ pipeline {
     }
 
     stage('Save Maven Cache') {
-      when { expression { !env.CHANGE_ID } }
+      when { branch 'main' }
       steps {
         writeCache name: MVN_CACHE_NAME, includes: "${MAVEN_REPO}/**"
       }
@@ -66,48 +66,25 @@ pipeline {
     stage('SonarQube Scan') {
       steps {
         withSonarQubeEnv('sonar-server') {
-          sh '''
-            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+          sh """
+            mvn sonar:sonar \
               -Dmaven.repo.local=${MAVEN_REPO} \
               -Dsonar.projectKey=board_game \
               -Dsonar.projectName=board_game
-          '''
+          """
         }
       }
     }
 
-    /* ================= TRIVY FS ================= */
-
-    stage('Restore Trivy Cache') {
-      steps {
-        sh 'mkdir -p ${TRIVY_CACHE_DIR} trivy-templates trivy-reports'
-        readCache name: TRIVY_CACHE_NAME
-      }
-    }
-
-    stage('Trivy FS Scan (Non-Blocking)') {
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-          sh '''
-            trivy fs \
-              --cache-dir ${TRIVY_CACHE_DIR} \
-              --db-repository ${TRIVY_DB_REPOSITORY} \
-              --java-db-repository ${TRIVY_JAVA_DB_REPOSITORY} \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed .
-          '''
-        }
-      }
-    }
-
-    /* ================= KANIKO ================= */
+    /* ================= DOCKER BUILD ================= */
 
     stage('Kaniko Build & Push') {
       when { branch 'main' }
       steps {
         container('kaniko') {
-          sh '''
+          sh """
             mkdir -p ${KANIKO_CACHE_DIR}
+
             /kaniko/executor \
               --context /workspace \
               --dockerfile Dockerfile \
@@ -115,31 +92,14 @@ pipeline {
               --destination ${IMAGE_NAME}:latest \
               --cache=true \
               --cache-dir ${KANIKO_CACHE_DIR}
-          '''
+          """
         }
       }
     }
 
-    /* ================= TRIVY IMAGE ================= */
+    /* ================= GITOPS DEPLOY ================= */
 
-    stage('Trivy Image Scan (Non-Blocking)') {
-      when { branch 'main' }
-      steps {
-        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-          sh '''
-            trivy image \
-              --cache-dir ${TRIVY_CACHE_DIR} \
-              --severity LOW,MEDIUM,HIGH,CRITICAL \
-              --ignore-unfixed \
-              ${IMAGE_NAME}:${IMAGE_TAG}
-          '''
-        }
-      }
-    }
-
-    /* ================= ARGO CD (ROLLOUT) ================= */
-
-    stage('Argo CD Rollout (GitOps)') {
+    stage('Update Argo CD Repo (Rollout Trigger)') {
       when { branch 'main' }
       steps {
         withCredentials([
@@ -149,32 +109,24 @@ pipeline {
             passwordVariable: 'GIT_TOKEN'
           )
         ]) {
-          sh '''
+          sh """
+            echo "Cloning GitOps repo"
             git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/boardgame-argo-rollouts.git
+
             cd boardgame-argo-rollouts/boardgame
 
-            # Update image tag in Helm values.yaml
-            sed -i "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" values.yaml
+            echo "Updating image tag to ${IMAGE_TAG}"
+            sed -i 's|tag:.*|tag: \"${IMAGE_TAG}\"|g' values.yaml
+
+            git status
 
             git config user.email "jenkins@cloudbees.local"
             git config user.name "jenkins"
 
             git commit -am "Rollout boardgame image ${IMAGE_TAG}" || echo "No changes to commit"
             git push origin main
-          '''
+          """
         }
-      }
-    }
-
-    /* ================= SAVE TRIVY CACHE ================= */
-
-    stage('Save Trivy Cache') {
-      when { expression { !env.CHANGE_ID } }
-      steps {
-        writeCache(
-          name: TRIVY_CACHE_NAME,
-          includes: "${TRIVY_CACHE_DIR}/**,trivy-templates/**"
-        )
       }
     }
   }
@@ -185,9 +137,9 @@ pipeline {
         to: "${EMAIL_RECIPIENTS}",
         subject: "✅ SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
         body: """
-        <h3>Build & Rollout Succeeded</h3>
-        <p><b>Job:</b> ${env.JOB_NAME}</p>
+        <h3>CI + GitOps Rollout Triggered</h3>
         <p><b>Image:</b> ${IMAGE_NAME}:${IMAGE_TAG}</p>
+        <p>Argo CD will sync and Argo Rollouts will perform canary deployment.</p>
         """
       )
     }
@@ -198,14 +150,12 @@ pipeline {
         subject: "❌ FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
         body: """
         <h3>Pipeline Failed</h3>
-        <p><b>Job:</b> ${env.JOB_NAME}</p>
         <p><b>Status:</b> ${currentBuild.currentResult}</p>
         """
       )
     }
 
     always {
-      archiveArtifacts allowEmptyArchive: true, artifacts: 'trivy-reports/**'
       deleteDir()
     }
   }
