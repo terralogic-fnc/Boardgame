@@ -8,7 +8,7 @@ pipeline {
   }
 
   options {
-    disableConcurrentBuilds()
+    
     durabilityHint('PERFORMANCE_OPTIMIZED')
   }
 
