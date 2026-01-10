@@ -179,6 +179,20 @@ pipeline {
         '''
       }
     }
+    /* ================= ARGO CD ================= */
+   stage('Update Argo CD Repo (Trigger Rollout)') {
+      when { branch 'main' }
+      steps {
+        withCredentials([
+          usernamePassword(
+            credentialsId: 'gitops-token',
+            usernameVariable: 'GIT_USER',
+            passwordVariable: 'GIT_TOKEN'
+          )
+        ]) {
+          sh '''
+            git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/boardgame-argo-rollouts.git
+            cd boardgame-argo-rollouts/boardgame
 
             sed -i 's|tag:.*|tag: "'${IMAGE_TAG}'"|g' values.yaml
 
