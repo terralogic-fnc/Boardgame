@@ -18,7 +18,6 @@ pipeline {
     MAVEN_REPO     = 'maven-repo'
     MVN_CACHE_NAME = 'mvn-cache'
 
-    KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
 
     EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com'
   }
@@ -67,7 +66,7 @@ pipeline {
       steps {
         withSonarQubeEnv('sonar-server') {
           sh """
-            mvn sonar:sonar \
+            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
               -Dmaven.repo.local=${MAVEN_REPO} \
               -Dsonar.projectKey=board_game \
               -Dsonar.projectName=board_game
@@ -89,9 +88,9 @@ pipeline {
               --context /workspace \
               --dockerfile Dockerfile \
               --destination ${IMAGE_NAME}:${IMAGE_TAG} \
-              --destination ${IMAGE_NAME}:latest \
-              --cache=true \
-              --cache-dir ${KANIKO_CACHE_DIR}
+              --destination ${IMAGE_NAME}:latest 
+    
+
           """
         }
       }
