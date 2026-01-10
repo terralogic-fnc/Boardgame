@@ -151,9 +151,9 @@ pipeline {
         ]) {
           sh '''
             git clone https://${GIT_USER}:${GIT_TOKEN}@github.com/terralogic-fnc/boardgame-argo-rollouts.git
-            cd boardgame-argo-rollouts/helm/boardgame
+            cd boardgame-argo-rollouts/boardgame
 
-            # Update image tag for Rollout
+            # Update image tag in Helm values.yaml
             sed -i "s|tag:.*|tag: \\"${IMAGE_TAG}\\"|g" values.yaml
 
             git config user.email "jenkins@cloudbees.local"
