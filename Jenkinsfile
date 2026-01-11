@@ -7,8 +7,6 @@ pipeline {
     }
   }
 
-
-
   environment {
     /* ================= IMAGE ================= */
     IMAGE_NAME = "gkamalakar1006/boardgames"
@@ -32,7 +30,7 @@ pipeline {
   stages {
 
     /* =================================================
-       INIT – TAG STRATEGY
+                    INIT – TAG STRATEGY
        ================================================= */
     stage('Init') {
       steps {
@@ -40,9 +38,9 @@ pipeline {
           // CI image tag for ALL branches
           env.CI_IMAGE_TAG = "build-${BUILD_NUMBER}"
 
-          // Release image tag ONLY for main (merge commit)
+          // Release image tag ONLY for main (last 6 commit chars)
           if (env.BRANCH_NAME == 'main') {
-            env.RELEASE_IMAGE_TAG = GIT_COMMIT.take(6)
+            env.RELEASE_IMAGE_TAG = env.GIT_COMMIT.substring(0, 6)
           } else {
             env.RELEASE_IMAGE_TAG = ''
           }
@@ -53,8 +51,10 @@ pipeline {
         echo "Release Image Tag : ${env.RELEASE_IMAGE_TAG ?: 'N/A'}"
       }
     }
+    /* =================================================
+                         MAVEN
+       ================================================= */
 
-    /* ================= MAVEN ================= */
 
     stage('Restore Maven Cache') {
       steps {
@@ -77,7 +77,7 @@ pipeline {
     }
 
     /* =================================================
-       TRIVY FS – MAIN ONLY (MOVED ABOVE SONAR)
+                    TRIVY FS – MAIN ONLY 
        ================================================= */
 
     stage('Restore Trivy Cache') {
@@ -113,14 +113,14 @@ pipeline {
               --ignore-unfixed \
               --format template \
               --template @trivy-templates/html.tpl \
-              --output trivy-reports/fs-vuln.html .
-			  > /dev/null 2>&1
+              --output trivy-reports/fs-vuln.html . > /dev/null 2>&1
           '''
         }
       }
     }
-
-    /* ================= SONAR ================= */
+    /* =========================================
+                      SONAR SCAN
+       ====================================== */
 
     stage('SonarQube Scan') {
       steps {
@@ -136,10 +136,11 @@ pipeline {
     }
 
     /* =================================================
-       BUILD & PUSH CI IMAGE – ALL BRANCHES
+       BUILD & PUSH CI IMAGE – ALL NON-MAIN BRANCHES
        ================================================= */
 
     stage('Kaniko Build & Push (CI Image)') {
+      when { not { branch 'main' } }
       steps {
         container('kaniko') {
           sh '''
