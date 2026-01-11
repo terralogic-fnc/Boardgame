@@ -163,10 +163,10 @@ pipeline {
       }
     }
 
-    /* ================= SBOM (MAIN ONLY) ================= */
+    /* ================= SBOM ================= */
 
-    stage('Generate SBOM (Main Only)') {
-      when { branch 'main' }
+    stage('Generate SBOM (CycloneDX)') {
+	  when { branch 'main' }
       steps {
         sh '''
           trivy fs \
