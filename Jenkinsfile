@@ -128,8 +128,8 @@ pipeline {
           sh '''
             mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
               -Dmaven.repo.local=${MAVEN_REPO} \
-              -Dsonar.projectKey=board_game \
-              -Dsonar.projectName=board_game
+              -Dsonar.projectKey=board \
+              -Dsonar.projectName=board
           '''
         }
       }
