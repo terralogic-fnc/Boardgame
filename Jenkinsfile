@@ -126,10 +126,11 @@ stage('SonarQube Scan') {
   steps {
     withSonarQubeEnv('sonar-server') {
       sh '''
-    mvn clean verify sonar:sonar \
-  -Dsonar.projectKey=demo-board-game \
-  -Dsonar.host.url=http://k8s-devtools-4102a18730-1117458042.ap-south-1.elb.amazonaws.com \
-  -Dsonar.login=sqa_08fa781ae9ebc8265f9e90902af727186e395a0d
+        mvn clean verify \
+          -Dmaven.repo.local=maven-repo \
+          org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar \
+          -Dsonar.projectKey=demo-board-game \
+          -Dsonar.projectName=demo-board-game
       '''
     }
   }
