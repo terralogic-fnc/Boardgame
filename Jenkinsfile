@@ -126,7 +126,8 @@ pipeline {
       steps {
         withSonarQubeEnv('sonar-server') {
           sh '''
-            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            #  mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar
+               mvn clean verify sonar:sonar\
               -Dmaven.repo.local=${MAVEN_REPO} \
               -Dsonar.projectKey=board \
               -Dsonar.projectName=board
