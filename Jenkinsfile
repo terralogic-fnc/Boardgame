@@ -9,7 +9,7 @@ pipeline {
 
   environment {
     /* ================= IMAGE ================= */
-    IMAGE_NAME = "gkamalakar1006/boardgames"
+    IMAGE_NAME = "kamalakar2210/boardgames"
 
     /* ================= MAVEN ================= */
     MAVEN_REPO     = 'maven-repo'
