@@ -122,19 +122,25 @@ pipeline {
                       SONAR SCAN
        ====================================== */
 
-stage('SonarQube Scan') {
-  steps {
-    withSonarQubeEnv('sonar-server') {
-      sh '''
-           mvn clean verify \
-           Dmaven.repo.local=${MAVEN_REPO} \
-           org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar \
-          -Dsonar.projectKey=board_game \
-          -Dsonar.projectName=board_game
-      '''
+      stage('SonarQube Scan') {
+        steps {
+           withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+           withSonarQubeEnv('sonar-server') {
+           sh '''
+             rm -rf .scannerwork
+
+              mvn verify \
+               -Dmaven.repo.local=${MAVEN_REPO} \
+                org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar \
+                -Dsonar.projectKey=board_game \
+                -Dsonar.projectName=board_game \
+                -Dsonar.login=${SONAR_TOKEN}
+        '''
+      }
     }
   }
 }
+
 
 
     /* =================================================
