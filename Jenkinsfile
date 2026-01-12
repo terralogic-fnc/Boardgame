@@ -126,11 +126,10 @@ stage('SonarQube Scan') {
   steps {
     withSonarQubeEnv('sonar-server') {
       sh '''
-        mvn clean verify \
-          -Dmaven.repo.local=maven-repo \
-          org.sonarsource.scanner.maven:sonar-maven-plugin:5.5.0.6356:sonar \
-          -Dsonar.projectKey=board \
-          -Dsonar.projectName=board
+            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+              -Dmaven.repo.local=${MAVEN_REPO} \
+              -Dsonar.projectKey=board \
+              -Dsonar.projectName=board
       '''
     }
   }
