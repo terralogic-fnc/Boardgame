@@ -8,7 +8,7 @@ pipeline {
   }
 
   environment {
-    /* ================= IMAGE ================= */
+    /* ================= IMAGE ==================== */
     IMAGE_NAME = "kamalakar2210/boardgames"
 
     /* ================= MAVEN ================= */
