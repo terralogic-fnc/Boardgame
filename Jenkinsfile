@@ -21,7 +21,7 @@ pipeline {
     TRIVY_DB_REPOSITORY      = 'docker.io/aquasec/trivy-db'
     TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
 
-    /* ================= KANIKO ================= */
+    /* ================= KANIKO =================++ */
     KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
 
     EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com,harshavardhan.s@terralogic.com'
