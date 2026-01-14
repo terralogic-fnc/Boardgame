@@ -22,9 +22,9 @@ pipeline {
     TRIVY_JAVA_DB_REPOSITORY = 'docker.io/aquasec/trivy-java-db'
 
     /* ================= KANIKO =================++ */
-    KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
+   # KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
 
-    EMAIL_RECIPIENTS = 'kamalakar.reddy@terralogic.com,harshavardhan.s@terralogic.com'
+    EMAIL_RECIPIENTS = 'kamalakar.reddy@terralogic.com harshavardhan.s@terralogic.com maqsood.ahmed@terralogic.com'
   }
 
   stages {
@@ -178,9 +178,9 @@ pipeline {
               --context /workspace \
               --dockerfile Dockerfile \
               --destination ${IMAGE_NAME}:${RELEASE_IMAGE_TAG} \
-              --destination ${IMAGE_NAME}:latest \
-              --cache=true \
-              --cache-dir ${KANIKO_CACHE_DIR}
+              --destination ${IMAGE_NAME}:latest 
+           #   --cache=true \
+           #   --cache-dir ${KANIKO_CACHE_DIR}
           '''
         }
       }
