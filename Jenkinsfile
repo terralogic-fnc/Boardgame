@@ -159,8 +159,8 @@ pipeline {
               --dockerfile Dockerfile \
               --destination ${IMAGE_NAME}:${CI_IMAGE_TAG} \
               --cache=true \
-              --cache-dir ${KANIKO_CACHE_DIR} \
-              --cache-repo ${CACHE_IMAGE}
+              --cache-dir ${KANIKO_CACHE_DIR} 
+  
           '''
         }
       }
@@ -175,14 +175,16 @@ pipeline {
       steps {
         container('kaniko') {
           sh '''
+           mkdir -p ${KANIKO_CACHE_DIR}
+           
             /kaniko/executor \
               --context /workspace \
               --dockerfile Dockerfile \
               --destination ${IMAGE_NAME}:${RELEASE_IMAGE_TAG} \
               --destination ${IMAGE_NAME}:latest \
               --cache=true \
-              --cache-dir ${KANIKO_CACHE_DIR} \
-              --cache-repo ${CACHE_IMAGE}
+              --cache-dir ${KANIKO_CACHE_DIR} 
+
           '''
         }
       }
