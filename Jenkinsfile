@@ -24,7 +24,7 @@ pipeline {
     /* ================= KANIKO =================++ */
     KANIKO_CACHE_DIR = '/workspace/.kaniko-cache'
 
-    EMAIL_RECIPIENTS = 'aws-fnc@terralogic.com,kamalakar.reddy@terralogic.com,harshavardhan.s@terralogic.com'
+    EMAIL_RECIPIENTS = 'kamalakar.reddy@terralogic.com,harshavardhan.s@terralogic.com'
   }
 
   stages {
