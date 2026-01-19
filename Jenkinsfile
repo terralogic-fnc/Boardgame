@@ -11,7 +11,7 @@ pipeline {
     /* ================= IMAGES ============================= */
     IMAGE_NAME = "kamalakar2210/boardgames"
 
-    /* ================= MAVEN ==================== */
+    /* ================= MAVEN ============================ */
     MAVEN_REPO     = 'maven-repo'
     MVN_CACHE_NAME = 'mvn-cache'
 
